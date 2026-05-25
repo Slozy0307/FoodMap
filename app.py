@@ -2,6 +2,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import pandas as pd
+import requests
 from urllib.parse import quote
 
 st.set_page_config(page_title="맛집 지도", page_icon="🍽️", layout="wide")
@@ -19,9 +20,8 @@ def load_data():
     return pd.read_csv("data/restaurants.csv")
 
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def load_seoul_geojson():
-    import requests
     url = (
         "https://raw.githubusercontent.com/southkorea/seoul-maps/"
         "master/kostat/2013/json/seoul_municipalities_geo_simple.json"
@@ -29,6 +29,8 @@ def load_seoul_geojson():
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
     return resp.json()
+
+
 
 
 def naver_url(address: str) -> str:
@@ -43,12 +45,10 @@ def build_map(df, selected_name=None, selected_lat=None, selected_lng=None):
 
     m = folium.Map(location=center, zoom_start=zoom, tiles=None)
 
-    folium.TileLayer(
-        tiles="CartoDB positron",
-        name="밝은 지도",
-        show=True,
-    ).add_to(m)
+    # 베이스: 밝은 지도
+    folium.TileLayer(tiles="CartoDB positron", name="밝은 지도", show=True).add_to(m)
 
+    # 오버레이: 지하철 노선 (단색, 투명 PNG)
     folium.TileLayer(
         tiles="https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png",
         attr='&copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
@@ -59,10 +59,11 @@ def build_map(df, selected_name=None, selected_lat=None, selected_lng=None):
         max_zoom=19,
     ).add_to(m)
 
+    # 서울시 경계
+    boundary_fg = folium.FeatureGroup(name="서울시 경계", show=True)
     try:
         folium.GeoJson(
             load_seoul_geojson(),
-            name="서울시 경계",
             style_function=lambda _: {
                 "fillColor": "transparent",
                 "fillOpacity": 0,
@@ -71,12 +72,14 @@ def build_map(df, selected_name=None, selected_lat=None, selected_lng=None):
                 "dashArray": "4 2",
             },
             tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["구:"], localize=True),
-        ).add_to(m)
+        ).add_to(boundary_fg)
     except Exception:
         pass
+    boundary_fg.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
 
+    # 겹치는 식당 감지
     name_show_count = df.groupby("name")["show"].nunique()
     overlap_names = set(name_show_count[name_show_count > 1].index)
 
@@ -102,7 +105,7 @@ def build_map(df, selected_name=None, selected_lat=None, selected_lng=None):
             tooltip=f"{row['name']} ({row['show']})",
         ).add_to(m)
 
-    # 겹치는 식당: 별 마커
+    # 별 마커 (복수 출연)
     overlap_df = df[df["name"].isin(overlap_names)]
     for name, group in overlap_df.groupby("name"):
         lat = group["lat"].mean()
@@ -137,7 +140,6 @@ def main():
 
     df = load_data()
 
-    # session_state 초기화
     if "selected_name" not in st.session_state:
         st.session_state.selected_name = None
         st.session_state.selected_lat = None
@@ -145,7 +147,6 @@ def main():
 
     overlap_count = int((df.groupby("name")["show"].nunique() > 1).sum())
 
-    # 사이드바 필터
     st.sidebar.title("필터")
     selected = []
     for show, color in SHOWS.items():
@@ -171,11 +172,11 @@ def main():
 
     with map_col:
         m = build_map(
-            filtered,
-            selected_name=st.session_state.selected_name,
-            selected_lat=st.session_state.selected_lat,
-            selected_lng=st.session_state.selected_lng,
-        )
+                filtered,
+                selected_name=st.session_state.selected_name,
+                selected_lat=st.session_state.selected_lat,
+                selected_lng=st.session_state.selected_lng,
+            )
         st_folium(m, width=None, height=650, returned_objects=[])
 
     with list_col:
